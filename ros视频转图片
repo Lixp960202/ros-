@@ -4,3 +4,4 @@ rosbag数据记录及转换图片、视频
 同时新建.launch文件，文件的内容参考上面博客，需要修改对应的topics名字，文件所在功能包的位置。
 在该功能包pkg路径下运行roslaunch xx.launch
 ctrl+h 可以看隐藏文件夹
+将解码的图片进行转移到其他目录 mv ～/.ros/frame*.jpg xxx/  xxx为文件夹的名字，此步骤可以重启一个终端执行。
