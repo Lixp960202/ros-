@@ -5,3 +5,10 @@ rosbag数据记录及转换图片、视频
 在该功能包pkg路径下运行roslaunch xx.launch
 ctrl+h 可以看隐藏文件夹
 将解码的图片进行转移到其他目录 mv ～/.ros/frame*.jpg xxx/  xxx为文件夹的名字，此步骤可以重启一个终端执行。
+
+
+简书：可视化bag文件的内容  https://www.jianshu.com/p/5fbeb7144a3f
+rosrun image_view extract_images _sec_per_frame:=0.01 image:=<IMAGETOPICINBAGFILE>  
+<IMAGETOPICINBAGFILE> 是topic的内容，比如上图的/right_camera/image _color  前台是要安装相关的包，
+rosbag  play xxx.bag
+就是打开一个命令获取来个某个topic的数据，然后我们就可以play这个文件，最终就会显示出来
