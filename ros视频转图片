@@ -1,0 +1,6 @@
+rosbag数据记录及转换图片、视频
+参考博客：https://blog.csdn.net/u012706484/article/details/78495896
+建立.bag文件时需要建立工作空间，同时在工作空间的src文件夹下建立功能包，将.bag文件放在此功能包下，
+同时新建.launch文件，文件的内容参考上面博客，需要修改对应的topics名字，文件所在功能包的位置。
+在该功能包pkg路径下运行roslaunch xx.launch
+ctrl+h 可以看隐藏文件夹
