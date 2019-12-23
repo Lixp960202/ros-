@@ -1,0 +1,1519 @@
+#include <opencv2/opencv.hpp>
+#include "opencv2/imgproc.hpp"
+#include "opencv2/imgcodecs.hpp"
+#include <vector>
+#include <iostream>
+#include <fstream>
+#include <algorithm>
+
+
+
+
+using namespace cv;
+using namespace std;
+
+
+//void pickHighLightFire(Mat& inputFrame, Mat& outputFrame);
+
+vector<Vec4f> line_fitting(vector<vector<Vec4f>> lines_KN_b0,Mat Pline_2,float lenth,float k);//直线拟合，输入为分好组的向量Vector，输出为图像，限制需要画出来的直线长度，和斜率范围
+vector<vector<Vec4f> > get_zu_b(vector<Vec4f>lines,float b1,float b2);//获得截距分组，其中输入量为lines，b1为小截距范围限制，b2为大截距范围限制
+vector <float> get_lines_b(vector<Vec4f> lines);//获得直线组的截距，
+vector <float> get_lines_k(vector<Vec4f> lines);//获得直线组的斜率，
+vector<Vec4f> get_lines_Kselect(vector<Vec4f> lines,float k1,float k2);//斜率限制，因为在拟合直线的过程中，可能会拟合出斜率与原来的斜率相差较大的直线
+float get_line_length(Vec4f lineP);//获得直线的长度，输入量为4个点
+vector<Vec4f> get_fitting_Kselect(vector<Vec4f> lines_b0_2,float b,float k,Mat Pline_2);//根据斜率拟合，用于最后一步，输入为直线组，限制量为截距，斜率，输出量为图像，图像应该加个引用
+float get_line_B(Vec4f lineP);//获得直线的截距
+float get_line_K(Vec4f lineP);//获得直线的斜率
+vector<Vec4f> intercept_sort1(vector<Vec4f> &lines);//截距排序,从小到大.问题已经解决
+vector<Vec4f> intercept_sort2(vector<Vec4f> &lines);//截距排序，从大到小。
+Point get_crosspoint(Vec4f line1,Vec4f line2);//获得两条直线的交点
+
+//输入一堆直线，返回每条直线与水平直线的角度，为弧度/截距b，此函数用来调试用
+
+
+int main()
+{
+
+    Mat inputImage = imread("/home/lixp/all-test/Snap_001.jpg");//这里放置自己的文件路径。
+    Mat HSVImage,GrayImage;
+
+    cvtColor(inputImage,GrayImage,COLOR_BGR2GRAY);//灰度图
+    cvtColor(inputImage, HSVImage, COLOR_BGR2HSV);//hsv图像
+    vector<Mat> image_split;//hsv三个通道
+    split(HSVImage,image_split);
+    equalizeHist(image_split[2],image_split[2]);//灰度直方图均衡化
+    merge(image_split,HSVImage);
+
+//    imshow("H",image_split[0]);//H
+//    imshow("S",image_split[1]);//S
+    imshow("V",image_split[2]);//V
+
+    GaussianBlur(image_split[1],image_split[1],Size(3,3),0);
+    threshold(image_split[1],image_split[1],25,255,THRESH_BINARY);
+//    imshow("S",image_split[1]);//S
+
+    //形态学操作
+    Mat morph_1,morph_2;
+
+    Mat element_close = getStructuringElement(MORPH_RECT, Size(5,5));
+    morphologyEx(image_split[1], morph_1, MORPH_CLOSE, element_close);
+
+//    imshow("morph1",morph_1);
+
+    Mat element_open = getStructuringElement(MORPH_RECT,Size(3,3));
+    morphologyEx(morph_1, morph_2, MORPH_OPEN, element_open);
+
+    //开操作 (去除一些噪点)
+//    imshow("morph2",morph_2);
+
+    Mat cann,cann_gray;//canny算子边缘检测
+    Canny(morph_2,cann,20,40,5);
+
+//    GaussianBlur(cann_gray,cann_gray,Size(3,3),0);
+//    imshow("canny",cann);
+
+
+
+    //灰度图像增强对比度
+//    GaussianBlur(GrayImage,GrayImage,Size(5,5),0);
+//    imshow("GAUSSSIAN",GrayImage);
+//    threshold(GrayImage,GrayImage,90,255,THRESH_BINARY);
+//    imshow("threshold",GrayImage);
+//    Canny(GrayImage,cann_gray,20,40,5);
+//    imshow("canny_gray",cann_gray);
+
+
+    //概率霍夫变换
+    Mat tmp = Mat::zeros(inputImage.size(), CV_8UC1);//检测那些需要的直线哪些没被画出来/检测删去不符合条件的线
+    Mat Hough = Mat::zeros(inputImage.size(), CV_8UC1);
+    vector<Vec4f> lines_H;//直线的数目
+//    vector <float> lines_arctan;//直线斜率
+    //'1'生成极坐标时候的像素扫描步长，'CV_PI/180'生成极坐标时候的角度步长，'10'最小直线长度，'0'最大间隔（能构成一条直线）
+    HoughLinesP(cann,lines_H,1,CV_PI/180,20,20,5);
+//    cout << "检测到的直线数目为：" << lines_H.size()<< endl;
+
+    //删除斜率不符合条件的直线
+    vector<Vec4f>::iterator iter = lines_H.begin();
+    while(iter != lines_H.end())
+    {
+         float  k = (double)((*iter)[3]- (*iter)[1]) / (double)((*iter)[2] -(*iter)[0]); //求出直线的斜率
+         k = atan(k)*180.0/3.1415926;
+//       cout << "检测到的直线弧度为：" << k<< endl;
+
+
+         if(((-1<k)&&(k<1))||((-30<k)&&(k<-21))||((11<k)&&(k<25)))
+         {
+//                 cout << "检测到的直线弧度为：" << k<< endl;
+                 line(tmp,Point((*iter)[0],(*iter)[1]),Point((*iter)[2],(*iter)[3]),Scalar(255),3,LINE_AA);//意外删除的直线
+                 ++iter;
+         }
+
+         else
+         {
+//             line(tmp,Point((*iter)[0],(*iter)[1]),Point((*iter)[2],(*iter)[3]),Scalar(255),3,LINE_AA);//意外删除的直线
+//             cout << "检测到的直线弧度为：" << k<< "   ";
+//             cout <<"坐标为："<<(*iter)[0]<<"  "<<(*iter)[1]<<endl;
+             iter=lines_H.erase(iter);
+         }
+
+
+    }
+    imshow("tmp",tmp);
+    //按照斜率，从小到大进行排序,冒泡排序
+    //k1,k2用来斜率排序，k3,k4用来分组，根据截距来分组
+    for(unsigned int i=0;i<lines_H.size();i++)//进行n次排序
+    {
+
+        for(unsigned int j=0;j<lines_H.size();j++)
+        {
+            Vec4f plines_1=lines_H[j];
+            float k1 = (double)(plines_1[3]- plines_1[1]) / (double)(plines_1[2] -plines_1[0]); //求出直线的斜率
+             k1 = atan(k1)*180.0/3.1415926;
+            Vec4f plines_2=lines_H[j+1];
+            float k2 = (double)(plines_2[3]- plines_2[1]) / (double)(plines_2[2] -plines_2[0]); //求出直线的斜率
+             k2 = atan(k2)*180.0/3.1415926;
+             if(k1>k2)
+             {
+                 Vec4f tmp = lines_H[j];
+                 lines_H[j] = lines_H[j+1];
+                 lines_H[j+1] = tmp;
+//                 swap(lines_H[j],lines_H[j+1]);
+             }
+        }
+    }
+
+    //检测排序是否成功
+//    for(unsigned int i=0;i<lines_H.size();i++)
+//    {
+//        Vec4f plines=lines_H[i];
+//        float k1 = (double)(plines[3]- plines[1]) / (double)(plines[2] -plines[0]); //求出直线的斜率
+//        k1 = atan(k1)*180.0/3.1415926;
+//        cout<<"k1:"<<k1<<"  "<<"直线的坐标："<<plines<<endl;
+
+//    }
+
+    //首先将按照斜率排好的直线点，按照斜率正负和零分为三组
+    vector<Vec4f> lines_s0;//小于零的直线点的集合
+    vector<Vec4f> lines_0; //等于零的直线点的集合
+    vector<Vec4f> lines_b0;//大于零的直线点的集合
+    for(unsigned int i=0;i<lines_H.size();i++)
+    {
+        Vec4f plines_1=lines_H[i];
+        float k1 = (double)(plines_1[3]- plines_1[1]) / (double)(plines_1[2] -plines_1[0]); //求出直线的斜率
+        k1 = atan(k1)*180.0/3.1415926;
+        if(k1<-1)
+        {
+            lines_s0.push_back(plines_1);
+
+        }
+        else if(k1>1)
+        {
+            lines_b0.push_back(plines_1);
+        }
+        else
+        {
+            lines_0.push_back(plines_1);
+        }
+    }
+
+   //输出上面分的三组，看分组结果是否正确
+//   for(unsigned int i=0;i<lines_s0.size();i++)
+//   {
+//         Vec4f plines_s0=lines_H[i];
+//         cout<<"k<-1的点"<<plines_s0<<endl;
+
+//   }
+//   for(unsigned int i=0;i<lines_0.size();i++)
+//   {
+//         Vec4f plines_0=lines_0[i];
+//         cout<<"k=0的点"<<plines_0<<endl;
+
+//   }
+//   for(unsigned int i=0;i<lines_b0.size();i++)
+//   {
+//         Vec4f plines_b0=lines_b0[i];
+//         cout<<"k>0的点"<<plines_b0<<endl;
+
+//   }
+
+
+
+    //对斜率小于0的直线，将截距按照从小到大的顺序进行排序
+    for(unsigned int i=0;i<lines_s0.size()-1;i++)
+    {
+        for(unsigned int j=0;j<lines_s0.size()-1;j++)
+        {
+            Vec4f plines_s0_1=lines_s0[j];
+//            cout<<"k<-1的点"<<plines_s0_1<<endl;
+
+            float k_s0 = (double)(plines_s0_1[3]- plines_s0_1[1]) / (double)(plines_s0_1[2] -plines_s0_1[0]); //求出直线的斜率
+            float b_1 = (double)plines_s0_1[1] - k_s0 * (double)plines_s0_1[0];//计算1的截距
+            Vec4f plines_s0_2 = lines_s0[j+1];
+            float k_s02 = (double)(plines_s0_2[3]- plines_s0_2[1]) / (double)(plines_s0_2[2] -plines_s0_2[0]); //求出直线的斜率
+            float b_2 = (double) plines_s0_2[1] - k_s02 * (double) plines_s0_2[0];//计算2的截距
+            if(b_1>b_2)
+            {
+                swap(lines_s0[j],lines_s0[j+1]);
+            }
+        }
+    }
+    //遍历查看，确保正确
+//    for(unsigned int i=0;i<lines_s0.size();i++)
+//    {
+//          Vec4f plines_0=lines_s0[i];
+//          float k_s0 = (double)(plines_0[3]- plines_0[1]) / (double)(plines_0[2] -plines_0[0]); //求出直线的斜率
+//          float b_1 = (double)plines_0[1] - k_s0 * (double)plines_0[0];//计算1的截距
+//          cout<<"b<0:"<<b_1<<"  "<<"k<-1的点"<<plines_0<<endl;
+
+//    }
+    //对斜率大于0的直线，将截距按照从小到大的顺序进行排序
+    for(unsigned int i=0;i<lines_b0.size()-1;i++)
+    {
+        for(unsigned int j=0;j<lines_b0.size()-1;j++)
+        {
+            Vec4f plines_b0_1=lines_b0[j];
+//            cout<<"k>1的点"<<plines_b0_1<<endl;
+
+            float k_b0 = (double)(plines_b0_1[3]- plines_b0_1[1]) / (double)(plines_b0_1[2] -plines_b0_1[0]); //求出直线的斜率
+            float b_1 = (double)plines_b0_1[1] - k_b0 * (double)plines_b0_1[0];//计算1的截距
+            Vec4f plines_b0_2 = lines_b0[j+1];
+            float k_b02 = (double)(plines_b0_2[3]- plines_b0_2[1]) / (double)(plines_b0_2[2] -plines_b0_2[0]); //求出直线的斜率
+            float b_2 = (double) plines_b0_2[1] - k_b02 * (double) plines_b0_2[0];//计算2的截距
+            if(b_1>b_2)
+            {
+                swap(lines_b0[j],lines_b0[j+1]);
+            }
+        }
+    }
+    //遍历查看，确保正确
+    for(unsigned int i=0;i<lines_b0.size();i++)
+    {
+          Vec4f plines_0=lines_b0[i];
+          float k_b0 = (double)(plines_0[3]- plines_0[1]) / (double)(plines_0[2] -plines_0[0]); //求出直线的斜率
+          float b_1 = (double)plines_0[1] - k_b0 * (double)plines_0[0];//计算1的截距
+          cout<<"b>0:"<<b_1<<"  "<<"k>0的点"<<plines_0<<endl;
+
+    }
+    //对斜率等于0的直线，将截距按照从小到大的顺序进行排序
+    for(unsigned int i=0;i<lines_0.size()-1;i++)
+    {
+        for(unsigned int j=0;j<lines_0.size()-1;j++)
+        {
+            Vec4f plines_0_1=lines_0[j];
+//            cout<<"k=0的点"<<plines_0_1<<endl;
+
+            float k_0 = (double)(plines_0_1[3]- plines_0_1[1]) / (double)(plines_0_1[2] -plines_0_1[0]); //求出直线的斜率
+            float b_1 = (double)plines_0_1[1] - k_0 * (double)plines_0_1[0];//计算1的截距
+            Vec4f plines_0_2 = lines_0[j+1];
+            float k_02 = (double)(plines_0_2[3]- plines_0_2[1]) / (double)(plines_0_2[2] -plines_0_2[0]); //求出直线的斜率
+            float b_2 = (double) plines_0_2[1] - k_02 * (double) plines_0_2[0];//计算2的截距
+            if(b_1>b_2)
+            {
+                swap(lines_0[j],lines_0[j+1]);
+            }
+        }
+    }
+    //遍历查看，确保正确
+//    for(unsigned int i=0;i<lines_0.size();i++)
+//    {
+//          Vec4f plines_0=lines_0[i];
+//          float k_0 = (double)(plines_0[3]- plines_0[1]) / (double)(plines_0[2] -plines_0[0]); //求出直线的斜率
+//          float b_1 = (double)plines_0[1] - k_0 * (double)plines_0[0];//计算1的截距
+//          cout<<"b=0:"<<b_1<<"  "<<"k=0的点"<<plines_0<<endl;
+
+//    }
+
+
+    //将斜率大于0的分在一起，同时判断他们的截距，根据截距进行分组
+    //将斜率小于0的分在一起，同时判断他们的截距，根据截距进行分组
+    //将斜率等于0的分在一起，同时判断他们的截距，根据截距进行分组
+    //分组完成后，根据斜率在进行判断是否为相近直线，进行直线拟合
+    //k1,k2用来斜率排序，k3,k4用来分组，根据截距来分组
+   //分别对在三组中的截距进行分组，在一定范围内，将其归为一组，且包含对应直线的4点
+    vector<vector<Vec4f> > lines_KN_s0;//根据截距对斜率小于0的进行分组
+    vector<vector<Vec4f> > lines_KN_0; //根据截距对斜率等于0的进行分组
+    vector<vector<Vec4f> > lines_KN_b0;//根据截距对斜率大于0的进行分组
+    //将斜率小于0的分在一起，同时判断他们的截距，根据截距进行分组
+    lines_KN_s0 = get_zu_b(lines_s0,3.5,10);
+    //检测分组是否正确
+//    for(unsigned int i = 0;i<lines_KN_s0.size();i++)
+//    {
+//        vector<Vec4f> lines_T = lines_KN_s0[i];
+//        for(unsigned int j = 0;j<lines_T.size();j++)
+//        {
+//            cout<<"第"<<i<<"组："<<lines_T[j]<<endl;
+//        }
+
+//    }
+
+    //将斜率大于0的分在一起，同时判断他们的截距，根据截距进行分组
+    lines_KN_b0 = get_zu_b(lines_b0,2,10);
+//检测分组是否正确
+//    for(unsigned int i = 0;i<lines_KN_b0.size();i++)
+//    {
+//        vector<Vec4f> lines_T = lines_KN_b0[i];
+//        for(unsigned int j = 0;j<lines_T.size();j++)
+//        {
+//            cout<<"第"<<i<<"组："<<lines_T[j]<<endl;
+//        }
+//    }
+
+    //将斜率等于0的分在一起，同时判断他们的截距，根据截距进行分组
+   lines_KN_0 = get_zu_b(lines_0,2,6);
+
+    //检测分组是否正确
+//    for(unsigned int i = 0;i<lines_KN_0.size();i++)
+//    {
+//        vector<Vec4f> lines_T = lines_KN_0[i];
+//        for(unsigned int j = 0;j<lines_T.size();j++)
+//        {
+//            cout<<"第"<<i<<"组："<<lines_T[j]<<endl;
+//        }
+
+//    }
+
+
+
+   //根据分组后的直线斜率和截距来判断直线是否共线
+   Mat Pline_0 = Mat::zeros(inputImage.size(), CV_8UC1);
+   Mat Pline_1 = Mat::zeros(inputImage.size(), CV_8UC1);
+   Mat Pline_2 = Mat::zeros(inputImage.size(), CV_8UC1);
+   Mat Pline_3 = Mat::zeros(inputImage.size(), CV_8UC1);
+   vector<Vec4f>  lines_KN_s0_2;//直线拟合后，返回的直线斜率小于0数组
+   vector<Vec4f>  lines_KN_0_2; //直线拟合后，返回的直线斜率小于0数组
+   vector<Vec4f>  lines_KN_b0_2;//直线拟合后，返回的直线斜率小于0数组
+
+   //对分完组的直线进行拟合
+   //斜率小于0的分组，进行对应的斜率是否在一定范围内，若在进行直线拟合
+   //斜率等于0的分组，将在同一组的进行直线拟合，如果一个组中只有一条直线，则舍弃这条直线
+   //斜率大于0的分组，进行对应的斜率是否在一定范围内的判断，若在进行直线拟合
+
+   //斜率小于0,第一次拟合
+   vector<Vec4f> lines_s0_2;
+   vector<float> b_num;
+   vector<float> k_num;
+   lines_s0_2 = line_fitting(lines_KN_s0,Pline_0,20,0.015);
+   b_num = get_lines_b(lines_s0_2);
+   lines_s0_2 = intercept_sort1(lines_s0_2);//截距排序返回的直线组
+
+   b_num = get_lines_b(lines_s0_2);
+   k_num = get_lines_k(lines_s0_2);
+
+   //在进行分组，拟合，第二次拟合
+   vector<vector<Vec4f> > lines_less0_2;
+   lines_less0_2 = get_zu_b(lines_s0_2,5,15);
+
+   //拟合后的直线数目较多，需要再次拟合
+   Pline_0 = Mat::zeros(inputImage.size(), CV_8UC1);
+   lines_s0_2 = line_fitting(lines_less0_2,Pline_0,70,0.05);
+   b_num = get_lines_b(lines_s0_2);
+   k_num = get_lines_k(lines_s0_2);
+   lines_s0_2 = get_lines_Kselect(lines_s0_2,-0.55,-0.4);
+
+   //第三次拟合
+//   lines_less0_2 = get_zu_b(lines_s0_2,20,30);
+//   Pline_0 = Mat::zeros(inputImage.size(), CV_8UC1);
+   lines_s0_2 = get_fitting_Kselect(lines_s0_2,10,0.05,Pline_0);
+
+
+//   imshow("<0",Pline_0);
+   for(unsigned int i=0;i<lines_s0_2.size();i++)
+   {
+       Vec4f point_Set = lines_s0_2[i];
+       Point p1,p2;
+       p1.x = point_Set[0];
+       p1.y = point_Set[1];
+       p2.x = point_Set[2];
+       p2.y = point_Set[3];
+       line(inputImage, p1, p2, cv::Scalar(255), 2, 8, 0);
+
+   }
+
+
+   //等于0的直线拟合部分
+  vector<Vec4f> lines_0_2;
+//  vector<float> b_num;
+//  vector<float> k_num;
+  lines_0_2 = line_fitting(lines_KN_0,Pline_1,50,0.015);//直线拟合返回回来的直线组
+//  lines_0_2 = get_lines_Kselect(lines_0_2);//斜率范围限制返回的直线组
+//  b_num = get_lines_b(lines_0_2);
+//  k_num = get_lines_k(lines_0_2);
+  lines_0_2 = intercept_sort1(lines_0_2);//截距排序返回的直线组
+//  b_num = get_lines_b(lines_0_2);
+
+  //第二次拟合
+  vector<vector<Vec4f> > lines_zero_2;
+  Pline_1= Mat::zeros(inputImage.size(), CV_8UC1);//图像清零
+  lines_zero_2 = get_zu_b(lines_0_2,2,5);
+  lines_0_2 = line_fitting(lines_zero_2,Pline_1,100,0.02);
+  lines_0_2 = intercept_sort1(lines_0_2);//截距排序返回的直线组
+//  b_num = get_lines_b(lines_0_2);
+//  k_num = get_lines_k(lines_0_2);
+  lines_0_2 = get_lines_Kselect(lines_0_2,-0.025,-0.005);//斜率范围限制返回的直线组
+//  b_num = get_lines_b(lines_0_2);
+//  k_num = get_lines_k(lines_0_2);
+ //第三次拟合
+  Pline_1= Mat::zeros(inputImage.size(), CV_8UC1);//图像清零
+  lines_zero_2 = get_zu_b(lines_0_2,2,5);
+  lines_0_2 = line_fitting(lines_zero_2,Pline_1,100,0.02);
+//  b_num = get_lines_b(lines_0_2);
+//  k_num = get_lines_k(lines_0_2);
+  //斜率拟合
+  Pline_1 = Mat::zeros(inputImage.size(), CV_8UC1);
+  lines_0_2 = get_fitting_Kselect(lines_0_2,10,0.005,Pline_1);
+
+  imshow("0",Pline_1);
+
+//  line(Pline_3, Point(1065,264), Point(1249,262), cv::Scalar(255), 2, 8, 0);
+//     line(Pline_3, Point(34,282), Point(847,270), cv::Scalar(255), 2, 8, 0);
+//     line(Pline_3, Point(501,99), Point(970,98), cv::Scalar(255), 2, 8, 0);
+//     line(Pline_3, Point(442,109), Point(870,102), cv::Scalar(255), 2, 8, 0);
+//      line(Pline_3, Point(1031,96), Point(1168,133), cv::Scalar(255), 2, 8, 0);
+//     line(Pline_3, Point(922,62), Point(1276,148), cv::Scalar(255), 2, 8, 0);
+//     line(Pline_3, Point(1083,118), Point(1181,135), cv::Scalar(255), 2, 8, 0);
+//  imshow("Pline_3",Pline_3);
+
+  //第二次拟合
+//  lines_zero_2 = get_zu_b(lines_0_2,5,10 );
+//  //拟合后的直线数目较多，需要再次拟合
+//  Pline_1 = Mat::zeros(inputImage.size(), CV_8UC1);
+//  lines_0_2 = line_fitting(lines_zero_2,Pline_1,100,0.05);
+  for(unsigned int i=0;i<lines_0_2.size();i++)
+  {
+      Vec4f point_Set = lines_0_2[i];
+      Point p1,p2;
+      p1.x = point_Set[0];
+      p1.y = point_Set[1];
+      p2.x = point_Set[2];
+      p2.y = point_Set[3];
+      line(inputImage, p1, p2, cv::Scalar(255), 2, 8, 0);
+
+  }
+
+
+
+
+
+
+    //大于0的直线拟合
+   vector<Vec4f> lines_b0_2;
+//   vector<float> b_num;
+//   vector<float> k_num;
+   lines_b0_2 = line_fitting(lines_KN_b0,Pline_2,60,0.012);//直线拟合返回回来的直线组
+   lines_b0_2 = get_lines_Kselect(lines_b0_2,0.20,0.45);//斜率范围限制返回的直线组
+   lines_b0_2 = intercept_sort1(lines_b0_2);//截距排序返回的直线组
+//   b_num = get_lines_b(lines_b0_2);
+//   k_num = get_lines_k(lines_b0_2);
+
+   //第二次拟合
+   vector<vector<Vec4f> > lines_B0_2;
+   lines_B0_2 = get_zu_b(lines_b0_2,4,10);
+   //拟合后的直线数目较多，需要再次拟合
+   Pline_2 = Mat::zeros(inputImage.size(), CV_8UC1);//图像清零
+   lines_b0_2 = line_fitting(lines_B0_2,Pline_2,60,0.015);//直线拟合
+   lines_b0_2 = intercept_sort1(lines_b0_2);//截距排序
+//      b_num = get_lines_b(lines_b0_2);
+//      k_num = get_lines_k(lines_b0_2);
+
+   //第三次根据截距和斜率进行直线拟合
+   Pline_2 = Mat::zeros(inputImage.size(), CV_8UC1);
+   lines_b0_2 = get_fitting_Kselect(lines_b0_2,45,0.05,Pline_2);
+
+//   line(Pline_3, Point(977,118), Point(1131,186), cv::Scalar(255), 2, 8, 0);
+
+//imshow("Pline_3",Pline_3);
+   //第二次拟合
+
+
+//   imshow("Pline_2",Pline_2);
+//   vector<Vec4f> lines_all;
+//   for(unsigned int i=0;i<lines_s0_2.size();i++)
+//   {
+//       Vec4f s0 = lines_s0_2[i];
+//       lines_all.push_back(s0);
+//   }
+//   unsigned int size_all_1 = lines_all.size();
+//   for(unsigned int i=0;i<lines_0_2.size();i++)
+//   {
+//       lines_all.push_back(lines_s0_2[i+size_all_1]);
+//   }
+//   unsigned int size_all_2 = lines_all.size();
+//   for(unsigned int i=0;i<lines_b0_2.size();i++)
+//   {
+//       lines_all.push_back(lines_s0_2[i+size_all_2]);
+//   }
+
+
+   for(unsigned int i=0;i<lines_b0_2.size();i++)
+   {
+       Vec4f point_Set = lines_b0_2[i];
+       Point p1,p2;
+       p1.x = point_Set[0];
+       p1.y = point_Set[1];
+       p2.x = point_Set[2];
+       p2.y = point_Set[3];
+       line(inputImage, p1, p2, cv::Scalar(255), 2, 8, 0);
+
+   }
+//   imshow("jieguo",inputImage);
+
+
+
+
+     imshow("jieguo",inputImage);
+//计算直线交点，让效果更好,主要画出窗框内部的四边形
+     vector<Vec4f> lines_sort_s0 = intercept_sort2(lines_s0_2);//从大到小排序
+//     int n_s0 = lines_s0_2.size();
+//     vector<float> b_s0 = get_lines_b(lines_sort_s0);
+     Vec4f line4f1 = lines_s0_2[0];
+     Vec4f line4f4 = lines_s0_2[1];
+
+      vector<Vec4f> lines_sort_0 = intercept_sort2(lines_0_2);//从大到小排序
+//      int n_0 = lines_0_2.size();
+//      vector<float> b_0 = get_lines_b(lines_sort_0);
+      Vec4f line4f2 = lines_0_2[1];
+      Vec4f line4f3 = lines_0_2[2];
+      Vec4f line4f5 = lines_0_2[3];
+
+      vector<Vec4f> lines_sort_b0 = intercept_sort1(lines_b0_2);//从大到小排序
+//      int n_b0 = lines_b0_2.size();
+//      vector<float> b_b0 = get_lines_b(lines_sort_b0);
+      Vec4f line4f6 = lines_b0_2[0];
+      Vec4f line4f7 = lines_b0_2[1];
+
+    Point p_1,p_2,p_3,p_4,p_5,p_6,p_7,p_8;
+    p_1 = get_crosspoint(line4f1,line4f2);
+    p_2 = get_crosspoint(line4f1,line4f3);
+    p_3 = get_crosspoint(line4f2,line4f4);
+    p_4 = get_crosspoint(line4f5,line4f4);
+    p_5 = get_crosspoint(line4f6,line4f2);
+    p_6 = get_crosspoint(line4f7,line4f2);
+    p_7 = get_crosspoint(line4f6,line4f3);
+    p_8 = get_crosspoint(line4f7,line4f5);
+
+    line(inputImage,p_1,p_2,Scalar(255),2,8);
+    line(inputImage,p_2,p_7,Scalar(255),2,8);
+    line(inputImage,p_7,p_5,Scalar(255),2,8);
+    line(inputImage,p_1,p_5,Scalar(255),2,8);
+
+    line(inputImage,p_3,p_4,Scalar(255),2,8);
+    line(inputImage,p_4,p_8,Scalar(255),2,8);
+    line(inputImage,p_8,p_6,Scalar(255),2,8);
+//    line(Pline_3,p_1,p_2,Scalar(255),2,8);
+
+    imshow("plian-3",inputImage);
+
+
+
+
+
+
+
+//    vector<vector<Vec4f>> lines_KN;
+//    unsigned int m=0;
+//    while(m<lines_H.size())
+//    {
+//        //先计算出第一和第二的斜率和截距
+//        vector<Vec4f> lines_TMP;
+//        Vec4f plines_3=lines_H[m];
+//        float k3 = (double)(plines_3[3]- plines_3[1]) / (double)(plines_3[2] -plines_3[0]); //求出直线的斜率
+//        float b3 = (double)plines_3[1] - k3 * (double)plines_3[0];//截距
+//        float theta3 = atan(k3)*180.0/3.1415926;//角度换算
+//        lines_TMP.push_back(lines_H[m]);
+////        cout<<lines_TMP[n]<<endl;
+//        Vec4f plines_4=lines_H[m+1];
+//        float k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);//斜率
+//        float theta4 = atan(k4)*180.0/3.1415926;//角度换算
+//        float b4 = (double)plines_4[1] - k4 * (double)plines_4[0];//截距
+
+//        //根据截距分组，在一定范围内的分在同一组
+//        if(theta3<0 && theta4<0)
+//        {
+////              //对一组里面的直线点集根据b截距进行排序，方便后面的比较
+////              for(unsigned int j = 0;j<Nlines.size();j++)
+////              {
+////                   for(unsigned int n=0;n<Nlines.size();n++)
+////                  {
+////                        Vec4f plines_1 = Nlines[n];
+////                        float k1 = (double)(plines_1[3]- plines_1[1]) / (double)(plines_1[2] -plines_1[0]); //求出直线的斜率
+////                        float b_1 = (double)plines_1[1] - k1 * (double)plines_1[0];//计算1的截距
+////                        Vec4f plines_2 = Nlines[n+1];
+////                        float k2 = (double)(plines_2[3]- plines_2[1]) / (double)(plines_2[2] -plines_2[0]); //求出直线的斜率
+////                        float b_2 = (double) plines_2[1] - k2 * (double) plines_2[0];//计算2的截距
+////                        if(b_1>b_2)
+////                         swap(Nlines[n],Nlines[n+1]);
+////                  }
+////              }
+
+
+
+//            unsigned int j = 1;
+//            for(; fabs(b3-b4)<=10; j++)
+//            {
+//              lines_TMP.push_back(lines_H[m+j]);
+//  //           cout<<lines_H[m+j]<<endl;
+//              plines_4=lines_H[m+j+1];
+//              k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);
+//              theta4 = atan(k4)*180.0/3.1415926;
+//              b4 = (double)plines_4[1] - k4 * (double)plines_4[0];//截距
+
+//           }
+//  //       for(unsigned int s=0;s<lines_TMP.size();s++)
+//  //       cout<<lines_TMP[s]<<endl;
+//           lines_KN.push_back(lines_TMP);
+//           m=m+j;
+
+//        }
+
+//        else if((theta3 == 0) && (theta4 == 0))
+//        {
+
+
+
+//        }
+
+//        else
+//        //根据斜率分组，在一定范围内的分在同一组
+//        if(k3<0)
+//        k3 = floor(k3);//向上取整
+//       else
+//         k3 = ceil(k3);//向下取整
+//       if(k4<0)
+//         k4 = floor(k4);
+//       else
+//         k4 = ceil(k4);
+//       if (k3<0)
+//       {
+//          unsigned int j = 1;
+//         for(; fabs(k3-k4)<=3; j++)
+//         {
+//            lines_TMP.push_back(lines_H[m+j]);
+////           cout<<lines_H[m+j]<<endl;
+//            plines_4=lines_H[m+j+1];
+//            k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);
+//            k4 = atan(k4)*180.0/3.1415926;
+//         }
+////       for(unsigned int s=0;s<lines_TMP.size();s++)
+////       cout<<lines_TMP[s]<<endl;
+//         lines_KN.push_back(lines_TMP);
+//         m=m+j;
+//       }
+//       else if(k3==0)
+//       {
+//          unsigned int j = 1;
+//          for(;k3==k4;j++)
+//          {
+//             lines_TMP.push_back(lines_H[m+j]);
+// //           cout<<lines_H[m+j]<<endl;
+//             plines_4=lines_H[m+j+1];
+//             k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);
+//             k4 = atan(k4)*180.0/3.1415926;
+//          }
+// //       for(unsigned int s=0;s<lines_TMP.size();s++)
+// //       cout<<lines_TMP[s]<<endl;
+//          lines_KN.push_back(lines_TMP);
+//          m=m+j;
+
+//       }
+//       else
+//       {
+//           unsigned int j = 1;
+//           for(;(k3-k4)<=3;j++)
+//           {
+//              lines_TMP.push_back(lines_H[m+j]);
+//  //           cout<<lines_H[m+j]<<endl;
+//              plines_4=lines_H[m+j+1];
+//              k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);
+//              k4 = atan(k4)*180.0/3.1415926;
+//           }
+//  //       for(unsigned int s=0;s<lines_TMP.size();s++)
+//  //       cout<<lines_TMP[s]<<endl;
+//           lines_KN.push_back(lines_TMP);
+//           m=m+j;
+//       }
+//    }
+
+
+
+
+
+//根据分组后的直线斜率和截距来判断直线是否共线
+//    Mat Pline_0 = Mat::zeros(inputImage.size(), CV_8UC1);
+//    Mat Pline_1 = Mat::zeros(inputImage.size(), CV_8UC1);
+//    Mat Pline_2 = Mat::zeros(inputImage.size(), CV_8UC1);
+
+
+//    unsigned int i = 0;
+//    while(i<lines_KN.size())
+//    vector<Vec4f> Nlines;
+//    for(unsigned int i = 0;i<1;i++)//lines_KN.size()
+//    {
+//         Nlines = lines_KN[i];
+//         cout<<"Nlines[0][0]:"<<Nlines[0][0]<<"  "<<endl;
+
+//         float k_Nlines = (double)(Nlines[i][3]- Nlines[i][1]) / (double)(Nlines[i][2] -Nlines[i][0]);
+//         float k_Nlines2= (double)(Nlines[i+1][3]- Nlines[i][1]) / (double)(Nlines[i+1][2] -Nlines[i+1][0]);
+//         vector<Point> point_Set;//直线拟合的点集合
+//         point_Set.push_back(Point(Nlines[0][0],Nlines[0][1]));//将第一条直线上的点入栈
+//         point_Set.push_back(Point(Nlines[0][2],Nlines[0][3]));
+//         line(Pline_1,Point(Nlines[0][0],Nlines[0][1]),Point(Nlines[0][2],Nlines[0][3]),Scalar(255),2,8,0);
+
+
+//         //对一组里面的直线点集根据b截距进行排序，方便后面的比较
+//         for(unsigned int j = 0;j<Nlines.size();j++)
+//         {
+//             for(unsigned int m=0;m<Nlines.size();m++)
+//             {
+//                 Vec4f plines_1 = Nlines[m];
+//                 float k1 = (double)(plines_1[3]- plines_1[1]) / (double)(plines_1[2] -plines_1[0]); //求出直线的斜率
+//                 float b_1 = (double)plines_1[1] - k1 * (double)plines_1[0];//计算1的截距
+//                 Vec4f plines_2 = Nlines[m+1];
+//                 float k2 = (double)(plines_2[3]- plines_2[1]) / (double)(plines_2[2] -plines_2[0]); //求出直线的斜率
+//                 float b_2 = (double) plines_2[1] - k2 * (double) plines_2[0];//计算2的截距
+//                 if(b_1>b_2)
+//                     swap(Nlines[m],Nlines[m+1]);
+
+//             }
+//         }
+
+//         for(unsigned k = 0;k<Nlines.size();k++)
+//         {
+//             Vec4f plines_3 = Nlines[k];
+//             float k3 = (double)(plines_3[3]- plines_3[1]) / (double)(plines_3[2] -plines_3[0]); //求出直线的斜率
+//             float b3 = (double) plines_3[1] - k3 * (double) plines_3[0];//计算2的截距
+//             cout<<"b:"<<b3<<"  "<<plines_3<<endl;
+//         }
+
+
+
+//         for(unsigned int j = 0;j<Nlines.size();j++)
+//         {
+//              //获得截距，需要先算斜率
+//             Vec4f Nlines_P1 = Nlines[j];
+////             cout<<"Nlines_P1:"<<Nlines_P1<<"  "<<endl;
+//             Vec4f Nlines_P2 = Nlines[j+1];
+////             cout<<"Nlines_P2:"<<Nlines_P2<<"  "<<endl;
+//             float k_Nlines1 = (double)(Nlines[j][3]- Nlines[j][1]) / (double)(Nlines[j][2] -Nlines[j][0]);
+//             float k_Nlines2 = (double)(Nlines[j+1][3]- Nlines[j+1][1]) / (double)(Nlines[j+1][2] -Nlines[j+1][0]);
+//             float b1 = (double)Nlines_P1[1] - k_Nlines1 * (double)Nlines_P1[0];//计算截距
+//             float b2 = (double)Nlines_P2[1] - k_Nlines2 * (double)Nlines_P2[0];//计算截距
+
+
+//             if(fabs(b1-b2) < 15 )
+//             {
+
+//                 point_Set.push_back(Point(Nlines_P2[0],Nlines_P2[1]));
+//                 point_Set.push_back(Point(Nlines_P2[2],Nlines_P2[3]));
+////                 cout<<b1<<"  "<<b2<<endl;
+//                 line(Pline_1,Point(Nlines_P2[0],Nlines_P2[1]),Point(Nlines_P2[2],Nlines_P2[3]),Scalar(255),2,8,0);
+
+//             }
+//             Vec4f line_para;
+//             fitLine(point_Set,line_para,DIST_L1,0,1e-2, 1e-2);
+//             //获取点斜式的点和斜率
+//             cv::Point point0;
+//             point0.x = line_para[2];
+//             point0.y = line_para[3];
+
+//             double k = line_para[1] / line_para[0];
+//             //获得直线的端点（y = k(x - x0) + y0）
+//             Point point1, point2;
+//             point1.x = Nlines[0][2];
+////             cout<<"Nlines[0][3]:"<<Nlines[0][2]<<"  "<<endl;
+//             point1.y = k * ( point1.x - point0.x) + point0.y;
+//             point2.x = Nlines_P1[0];
+////             cout<<"lines_P1[0]:"<<Nlines_P1[0]<<"  "<<endl;
+//             point2.y = k * (point2.x - point0.x) + point0.y;
+////             cout<<"Nlines_P1:"<<Nlines_P1<<"  "<<endl;
+////             cout<<"Nlines_P2:"<<Nlines_P2<<"  "<<endl;
+//             line(Pline_0, point1, point2, cv::Scalar(255), 2, 8, 0);
+//         }
+
+
+//        if()
+//    }
+//    imshow("Plane_0",Pline_0);
+//    imshow("Plane_1",Pline_1);
+//    imshow("Plane_2",Pline_2);
+
+
+
+//分组查看，确认上一步正确，将同一组的根据不同需求在进行排序
+//K=0,按照y坐标对该组该所有的点进行排序，排序完成后再根据y坐标相差较小的特点进行连线。
+//K<0,按照x坐标对该组该所有的点进行排序，排序完成后再根据前一个点的pt2的y坐标与后一个点的pt1的y坐标进行判断和连线。
+//K>0,按照x坐标对该组该所有的点进行排序，排序完成后再根据前一个点的pt2的y坐标与后一个点的pt1的y坐标进行判断和连线
+//    Mat Pline = Mat::zeros(inputImage.size(), CV_8UC1);
+//    Mat Pline_1 = Mat::zeros(inputImage.size(), CV_8UC1);
+//    Mat Pline_2 = Mat::zeros(inputImage.size(), CV_8UC1);
+//    for(unsigned int i = 0;i<lines_KN.size();i++)
+//    {
+//        vector<Vec4f> Klines;
+//        Klines = lines_KN[i];
+//        for(unsigned int j = 0;j<Klines.size();j++)
+//        {
+//            Vec4f Points = Klines[j];
+//            float k5 = (double)(Points[3]- Points[1]) / (double)(Points[2] -Points[0]);
+//            k5 = atan(k5)*180.0/3.1415926;
+
+//            if(k5 == 0)
+//            {
+//                //按照y坐标对该组该所有的点进行排序,这段代码有点问题
+//                for(unsigned int s = 0;s<Klines.size();s++)
+//                {
+//                    for(unsigned int t = 0;t<Klines.size();t++)
+//                    {
+//                        Vec4f Points_sort_pre =Klines[t];
+
+//                        Vec4f Points_sort_next =Klines[t+1];
+
+//                        if(Points_sort_pre[1] > Points_sort_next[1])
+//                            swap(Klines[t],Klines[t+1]);
+
+//                    }
+//                }
+//                for(unsigned int k = 0;k<Klines.size();k++)
+//                {
+//                    cout<<Klines[k]<<endl;
+//                }
+
+                //分组后，根据坐标进行判断和连线，这段代码没有问题
+//                Vec4f Points_pre  = Klines[j];
+//                Vec4f Points_next = Klines[j+1];
+
+//                unsigned int n=1;
+//                for(;Points_pre[3]-Points_next[1]<10;n++)//Y坐标相差比较少的
+//                {
+//                    Points_pre  = Klines[j+n];
+//                    Points_next = Klines[j+n+1];
+
+////                    cout<<Points_pre[0]<<"  "<<Points_pre[1]<<"  "<<Points_pre[2]<<"  "<<Points_pre[3]<<"  ";
+////                    cout<<Points_next[0]<<"  "<<Points_next[1]<<"  "<<Points_next[2]<<"  "<<Points_next[3]<<endl;
+
+//                }
+//                Point pt1(Points[0],Points[1]);
+//                Point pt2(Points_next[2],Points_next[3]);
+//                line(Pline_1,pt1,pt2,Scalar(255),2);
+//                j=j+n+1;
+//                imshow("Pline_1",Pline_1);
+//                cout<<Points[0],Points[1]
+
+//            }
+//            else if(k5 < 0)
+//            {
+//                Vec4f Points_pre  = lines_KN[i][j];
+//                Vec4f Points_next = lines_KN[i][j+1];
+//                unsigned int n=1;
+//                for(;Points_next[0]-Points_pre[2]<30;n++)//x坐标相差比较少的
+//                {
+//                    Points_pre  = lines_KN[i][j+n];
+//                    Points_next = lines_KN[i][j+n+1];
+
+//                }
+//                Point pt1(Points[0],Points[1]);
+//                Point pt2(Points_next[2],Points_next[3]);
+//                line(Pline_2,pt1,pt2,Scalar(255),2);
+//                j=j+n+1;
+//                imshow("Pline_2",Pline_2);
+//            }
+//            else
+//            {
+//                Vec4f Points_pre  = lines_KN[i][j];
+//                Vec4f Points_next = lines_KN[i][j+1];
+//                unsigned int n=1;
+//                for(;Points_pre[3]-Points_next[1]<10;n++)//x坐标相差比较少的
+//                {
+//                    Points_pre  = lines_KN[i][j+n];
+//                    Points_next = lines_KN[i][j+n+1];
+
+//                }
+//                Point pt1(Points[0],Points[1]);
+//                Point pt2(Points_next[2],Points_next[3]);
+//                line(Pline,pt1,pt2,Scalar(255),2);
+//                j=j+n+1;
+//                imshow("Pline",Pline);
+
+//            }
+//        }
+//    }
+
+
+
+
+//    cout << "检测到的第"<<i<<"直线弧度为：" << lines_arctan[i] << endl;
+
+//    cout << "检测到的直线数目为：" << lines_H.size()<< endl;
+
+//    Scalar color = Scalar(255);
+//    for (size_t i = 0; i < lines_H.size(); i++)
+//    {
+//         Vec4f plines=lines_H[i];  //一个plines里边是四个点一条直线
+//         line(Hough,Point(plines[0],plines[1]),Point(plines[2],plines[3]),color,3,LINE_AA);
+//    }
+//    imshow("hough",Hough);
+
+    //显示每条直线的角度
+
+
+
+
+//    Mat Hough_line = Mat::zeros(inputImage.size(), CV_8UC1);
+
+//    line(Hough_line,Point())
+
+
+
+//    Mat circle_add;
+//    addWeighted(temp,0.5,complet,0.5,0,circle_add);
+//    imshow("circle_add",circle_add);
+
+
+
+
+
+//    int iLowH = 0;
+//    int iHighH = 13;
+
+//    int iLowS = 6;
+//    int iHighS  = 40;
+
+//    int iLowV = 110;
+//    int iHighV = 190;
+//    //HSV二值化操作
+//    Mat imgThreshold;
+//    inRange(HSVImage,Scalar(iLowH,iLowS,iLowV),Scalar(iHighH,iHighS,iHighV),imgThreshold);
+
+//  //闭操作 (连接一些连通域)
+//    Mat element_close = getStructuringElement(MORPH_RECT, Size(7,7));
+//    morphologyEx(imgThreshold, imgThreshold, MORPH_CLOSE, element_close);
+//    //开操作 (去除一些噪点)
+//    Mat element_open = getStructuringElement(MORPH_RECT,Size(4,4));
+//    morphologyEx(imgThreshold, imgThreshold, MORPH_OPEN, element_open);
+
+//    int iLowH_2 = 114;
+//    int iHighH_2 = 180;
+
+//    int iLowS_2 = 4;
+//    int iHighS_2  = 30;
+
+//    int iLowV_2 = 100;
+//    int iHighV_2 = 225;
+
+//    Mat imgThreshold_2;
+//    inRange(HSVImage,Scalar(iLowH_2,iLowS_2,iLowV_2),Scalar(iHighH_2,iHighS_2,iHighV_2),imgThreshold_2);
+//     //闭操作 (连接一些连通域)
+//    Mat element_close2 = getStructuringElement(MORPH_RECT, Size(7,7));
+//    morphologyEx(imgThreshold_2, imgThreshold_2, MORPH_CLOSE, element_close2);
+//    //开操作 (去除一些噪点)
+//    Mat element_open2 = getStructuringElement(MORPH_RECT,Size(6,6));
+//    morphologyEx(imgThreshold_2, imgThreshold_2, MORPH_OPEN, element_open2);
+
+//    Mat add;
+//    addWeighted(imgThreshold,1.0,imgThreshold_2,1.0,3,add);
+
+
+
+//    imshow("imgthreshold",imgThreshold);
+//    imshow("imgthreshold2",imgThreshold_2);
+//    imshow("add",add);
+//    waitKey(0);
+
+
+    waitKey(0);
+    return 0;
+}
+
+vector<Vec4f> line_fitting(vector<vector<Vec4f>> lines_KN_b0,Mat Pline_2,float lenth,float k)//直线拟合
+{
+    vector<Vec4f> lines_tmp;
+    //对已经按照截距分好组的每一组的元素进行操作
+    for(unsigned int i=0;i<lines_KN_b0.size();i++)//lines_KN_b0.size()
+    {
+    vector<Vec4f> lines_b0_P = lines_KN_b0[i];
+    unsigned int j=0;
+    while(j<lines_b0_P.size())
+    {
+        unsigned int size = lines_b0_P.size();//获得这一组中有多少个元素
+        //如果这一组的元素只有一个，那么就看这条直线的长度是否在我们设定的范围内
+        if(size == 1)
+        {
+            float len = get_line_length(lines_b0_P[j]);
+            if(len > lenth)//判断是否在设定范围内
+            {
+               line(Pline_2,Point(lines_b0_P[j][0],lines_b0_P[j][1]), Point(lines_b0_P[j][2],lines_b0_P[j][3]), cv::Scalar(255), 2, 8, 0);
+               lines_tmp.push_back(lines_b0_P[j]);
+            }
+            j++;//不论在不在范围内，都要跳出循环
+        }
+        else//如果这一组的元素有多个,依次判断1与2，2与3,是否符合条件，符合条件，将对应的直线的点保存下来，不符合的计算对应的直线长度，判断直线是否在设定的范围内
+        {
+            vector<Point> point_Set;//直线拟合的点集合
+
+            Vec4f Nlines_P1 = lines_b0_P[j];
+            Vec4f Nlines_P2 = lines_b0_P[j+1];
+            //获得第一条和第二条直线的斜率
+            float k_Nlines1 = (double)(Nlines_P1[3]- Nlines_P1[1]) / (double)(Nlines_P1[2] -Nlines_P1[0]);
+            float k_Nlines2 = (double)(Nlines_P2[3]- Nlines_P2[1]) / (double)(Nlines_P2[2] -Nlines_P2[0]);
+//               if(fabs(k_Nlines1-k_Nlines2)<0.1)
+//               {
+//               point_Set.push_back(Point(Nlines_P1[0],Nlines_P1[1]));
+//               point_Set.push_back(Point(Nlines_P1[2],Nlines_P1[3]));
+            unsigned int m=1;//迭代判断斜率是否在范围内用
+            unsigned int times = 0;//计算符合条件的次数
+            while( m<size )
+             {
+
+                    if((fabs(k_Nlines1-k_Nlines2)<k))//设定的斜率范围
+                   {
+                         times++;
+                         //每次保存的只有后面那一条直线的特征点信息
+                         point_Set.push_back(Point(lines_b0_P[j+m][0],lines_b0_P[j+m][1]));
+                         point_Set.push_back(Point(lines_b0_P[j+m][2],lines_b0_P[j+m][3]));
+                         if(times==1)//如果第一次符合条件，那么有两条直线的点需要保存
+                         {
+                             point_Set.push_back(Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-1][1]));
+                             point_Set.push_back(Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-1][3]));
+
+                         }
+                         m++;
+                         if(m==size)//如果为最后一个，那么就出循环
+                         {
+                             m=size+1;
+//                                point_Set.push_back(Point(lines_b0_P[j+m][0],lines_b0_P[j+m][1]));
+//                                point_Set.push_back(Point(lines_b0_P[j+m][2],lines_b0_P[j+m][3]));
+                         }
+
+                         else//如果不是最后一个点，计算后面直线的斜率，方便下次进行比较
+                         {
+//                                point_Set.push_back(Point(lines_b0_P[j+m][0],lines_b0_P[j+m][1]));
+//                                point_Set.push_back(Point(lines_b0_P[j+m][2],lines_b0_P[j+m][3]));
+                             k_Nlines1 = (double)(lines_b0_P[j+m-1][3]- lines_b0_P[j+m-1][1]) / (double)(lines_b0_P[j+m-1][2] -lines_b0_P[j+m-1][0]);
+                             k_Nlines2 = (double)(lines_b0_P[j+m][3]- lines_b0_P[j+m][1]) / (double)(lines_b0_P[j+m][2] -lines_b0_P[j+m][0]);
+                         }
+                  }
+                  else//如果不在设定的斜率范围内，不符合条件，计算后面两条直线的斜率
+                  {
+                        k_Nlines1 = (double)(lines_b0_P[j+m][3]- lines_b0_P[j+m][1]) / (double)(lines_b0_P[j+m][2] -lines_b0_P[j+m][0]);
+                        k_Nlines2 = (double)(lines_b0_P[j+m+1][3]- lines_b0_P[j+m+1][1]) / (double)(lines_b0_P[j+m+1][2] -lines_b0_P[j+m+1][0]);
+                        if(times==0)//如果没有符合条件的直线，计算上一条直线的长度
+                        {
+                            float len_1 = get_line_length(lines_b0_P[j+m-1]);
+                            if(len_1 > lenth)
+                            {
+                               line(Pline_2,Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-1][1]), Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-1][3]), cv::Scalar(255), 2, 8, 0);
+                               lines_tmp.push_back(lines_b0_P[j+m-1]);
+                            }
+
+                        }
+                         m++;
+                         if(m==size)//如果进入为最后一条直线，计算最后一条直线的长度
+                         {
+                             float len_1 = get_line_length(lines_b0_P[j+m-1]);
+                             if(len_1 > lenth)
+                             {
+                                 line(Pline_2,Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-1][1]), Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-1][3]), cv::Scalar(255), 2, 8, 0);
+                                 lines_tmp.push_back(lines_b0_P[j+m-1]);
+                             }
+                             j=j+m;//出循环
+                         }
+//                            else if(m!=2)
+//                            {
+//                                float len = get_line_length(lines_b0_P[j+m-1]);
+//                                if(len > 20)
+//                                {
+//                                   line(Pline_2,Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-2][1]), Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-2][3]), cv::Scalar(255), 2, 8, 0);
+
+//                                }
+
+//                                float len = get_line_length(lines_b0_P[j+m-1]);
+//                                if(len > 20)
+//                                {
+//                                   line(Pline_2,Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-2][1]), Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-2][3]), cv::Scalar(255), 2, 8, 0);
+
+//                                }
+
+//                            }
+//                            else
+//                            {
+//                                float len_1 = get_line_length(lines_b0_P[j+m-1]);
+//                                if(len_1 > 20)
+//                                {
+//                                    line(Pline_2,Point(lines_b0_P[j+m-1][0],lines_b0_P[j+m-1][1]), Point(lines_b0_P[j+m-1][2],lines_b0_P[j+m-1][3]), cv::Scalar(255), 2, 8, 0);
+//                                }
+
+
+//                            }
+
+                }
+           }
+           int s = point_Set.size();//获得储存点的数目
+//                   if(point_Set.size()!=(times *2+2))//判断存的点是否等于符合条件的点 2条线 4个点 3条线 8个点
+//                   {
+//                            vector<Point>::iterator iter = point_Set.begin();
+//                            iter = point_Set.erase(begin(point_Set),begin(point_Set)+2);
+//                            s = point_Set.size();
+//                            cout<<"s"<<s<<endl;
+//                            float len = get_line_length(lines_b0_P[j]);
+//                            if(len > 20)
+//                            {
+//                               line(Pline_2,Point(lines_b0_P[j][0],lines_b0_P[j][1]), Point(lines_b0_P[j][2],lines_b0_P[j][3]), cv::Scalar(255), 2, 8, 0);
+
+//                            }
+//                            j++;
+//                   }
+           if(s != 0)//如果有直线的点存入，表示至少有两条直线，对这两条直线进行拟合
+           {
+                Vec4f line_para;
+                fitLine(point_Set,line_para,DIST_L1,0,1e-2, 1e-2);
+                //获取点斜式的点和斜率
+                cv::Point point0;
+                point0.x = line_para[2];
+                point0.y = line_para[3];
+
+                double k = line_para[1] / line_para[0];
+                //对贮存的点暗照x坐标，从小大的顺序进行排列
+                vector<vector<int>> a;
+                for(unsigned int i=0;i<point_Set.size();i++)
+                {
+                    Point p = point_Set[i];
+                    a.push_back(vector<int>{p.x,p.y});
+                }
+
+                sort(a.begin(), a.end());
+
+                for(unsigned int i=0;i<point_Set.size();i++)
+                {
+                    point_Set[i].x=a[i][0];
+                    point_Set[i].y=a[i][1];
+
+                }
+
+                //获得直线的端点（y = k(x - x0) + y0）
+                Vec4f p_tmp;
+                Point point1, point2;
+                point1.x = point_Set[0].x;
+                p_tmp[0] = point1.x;
+                point1.y = k * ( point1.x - point0.x) + point0.y;
+                p_tmp[1] = point1.y;
+                point2.x = point_Set[s-1].x;
+                p_tmp[2] = point2.x;
+                point2.y = k * (point2.x - point0.x) + point0.y;
+                p_tmp[3] = point2.y;
+                //绘制拟合直线
+                line(Pline_2, point1, point2, cv::Scalar(255), 2, 8, 0);
+
+                lines_tmp.push_back(p_tmp);
+                j=j+m;
+           }
+
+     }
+
+//               else
+//               {
+//                   for(unsigned int n=0;n<lines_b0_P.size();)
+//                   {
+//                       float length_1 = get_line_length(lines_b0_P[n]);
+//                       if(length_1 > 10)
+//                       {
+//                            line(Pline_0,Point(lines_b0_P[j][0],lines_b0_P[j][1]), Point(lines_b0_P[j][2],lines_b0_P[j][3]), cv::Scalar(255), 2, 8, 0);
+//                       }
+
+//                   }
+//                   j=size;
+//               }
+//           }
+    }
+}
+    return lines_tmp;
+}
+
+
+
+vector<vector<Vec4f> > get_zu_b(vector<Vec4f>lines,float b1,float b2)//获得截距分组，其中输入量为lines，b1为小截距范围限制，b2为大截距范围限制
+{
+    vector<vector<Vec4f> > lines_KN;
+    unsigned int t = 0;
+//    int g= 1;
+    float b3=0,k3=0,b4=0,k4=0;
+    while(t<lines.size())
+    {
+
+        vector<Vec4f> lines_TMP;//用来截距分组，将截距相差在一定范围内的分在一组，同时包含了对应的直线的点的信息
+        Vec4f plines_3=lines[t];//第一个点
+         k3 = (double)(plines_3[3]- plines_3[1]) / (double)(plines_3[2] -plines_3[0]); //求出直线的斜率
+         b3 = (double)plines_3[1] - k3 * (double)plines_3[0];//截距
+        lines_TMP.push_back(lines[t]);//对第一个进行入栈
+        Vec4f plines_4=lines[t+1];//第二个点
+         k4 = (double)(plines_4[3]- plines_4[1]) / (double)(plines_4[2] -plines_4[0]);//斜率
+         b4 = (double)plines_4[1] - k4 * (double)plines_4[0];//截距
+        //需要限制一个大范围的截距，再限制一个小范围的截距比较，由此可以进行分组
+        //如果当前值与后面的值差在10以内，则进入循环
+        //首先对下一个值入栈，此时该值进入循环中，表示满足条件
+        //保持b3的值不变，计算下一个b4，此时的b4不变，计算下一个值b5,
+
+        if(fabs(b3-b4)<b1)
+        {
+            lines_TMP.push_back(lines[t+1]);//如果前两个值为一组，将第二条直线的数据入栈
+            unsigned int j = 1;//需要写在外面，这样才可以保存下来j的值
+            float b5=b3-1;//先给一个真值，让下面的循环通过
+            while(fabs(b3-b5)<=b2)//检测第一个和第三个之间的差是否小于10
+//          for(; fabs(b3-b4)<=10; j++)
+            {
+
+                Vec4f plines_5 = lines[t+j+1];//下一个点
+                float k5 = (double)(plines_5[3]- plines_5[1]) / (double)(plines_5[2] -plines_5[0]);
+                b5 = (double)plines_5[1] - k5 * (double)plines_5[0];//截距
+                Vec4f plines_6 = lines[t+j];//中间点
+                float k6 = (double)(plines_6[3]- plines_6[1]) / (double)(plines_6[2] -plines_6[0]);
+                float b6 = (double)plines_6[1] - k6 * (double)plines_6[0];//截距
+                if(fabs(b5-b6)<b1)
+                {
+                    lines_TMP.push_back(lines[t+j+1]);
+//                  cout<<"第"<<g<<"次："<<lines_H[t+j]<<endl;
+                    j++;
+                }
+                else
+                {
+                    b5=b3-(b2+1);
+                    j++;
+                }
+
+             }
+//        for(unsigned int s=0;s<lines_TMP.size();s++)
+//        cout<<"第"<<g<<"次："<<lines_TMP[s]<<endl;
+            lines_KN.push_back(lines_TMP);
+            t=t+j;
+//        g++;
+        }
+        else
+        {
+            lines_KN.push_back(lines_TMP);
+            t++;
+        }
+    }
+    return lines_KN;
+
+}
+vector<Vec4f> get_fitting_Kselect(vector<Vec4f> lines_b0_2,float b,float k1,Mat Pline_2)//根据斜率进行直线拟合，可以限制斜率和截距的范围。
+{
+    vector<Vec4f> lines_N;//用于存放拟合的直线的信息
+    vector<float> b_b0 = get_lines_b(lines_b0_2);//获取直线组的截距
+    vector<float> k_b0 = get_lines_k(lines_b0_2);//获取直线组的斜率
+    unsigned int t = 0,s =0;//t，s用来判断是否相邻的两条直线都不符合条件
+    for(unsigned int i=0;i<lines_b0_2.size()-1;i++)//进行了n-1次循环
+    {
+        t++;
+        if((fabs(b_b0[i]-b_b0[i+1])< b ) && (fabs(k_b0[i]-k_b0[i+1])< k1 ))//如果两条直线符合条件进行拟合
+        {
+           vector<Point> P;//存放点的信息
+           P.push_back(Point(lines_b0_2[i][0],lines_b0_2[i][1]));
+           P.push_back(Point(lines_b0_2[i][2],lines_b0_2[i][3]));
+           P.push_back(Point(lines_b0_2[i+1][0],lines_b0_2[i+1][1]));
+           P.push_back(Point(lines_b0_2[i+1][2],lines_b0_2[i+1][3]));
+
+           Vec4f line_para;
+           fitLine(P,line_para,DIST_L2,0,1e-2, 1e-2);
+           //获取点斜式的点和斜率
+           cv::Point point0;
+           point0.x = line_para[2];
+           point0.y = line_para[3];
+           double k = line_para[1] / line_para[0];
+           //对贮存的点暗照x坐标，从小大的顺序进行排列
+           vector<vector<int>> a;
+           for(unsigned int i=0;i<P.size();i++)
+           {
+               Point p = P[i];
+               a.push_back(vector<int>{p.x,p.y});
+           }
+
+           sort(a.begin(), a.end());
+
+           for(unsigned int i=0;i<P.size();i++)
+           {
+               P[i].x=a[i][0];
+               P[i].y=a[i][1];
+
+           }
+           Vec4f p_tmp;
+           Point point1, point2;
+           point1.x = P[0].x;
+           p_tmp[0] = point1.x;
+           point1.y = k * ( point1.x - point0.x) + point0.y;
+           p_tmp[1] = point1.y;
+           point2.x = P[3].x;
+           p_tmp[2] = point2.x;
+           point2.y = k * (point2.x - point0.x) + point0.y;
+           p_tmp[3] = point2.y;
+           //绘制拟合直线
+           line(Pline_2, point1, point2, cv::Scalar(255), 2, 8, 0);
+           lines_N.push_back(p_tmp);
+        }
+        else
+        {
+
+            if(t==1)//如果是第一二条直线不符合条件，那么第一条直线肯定要画出来
+            {
+                line(Pline_2,Point(lines_b0_2[0][0],lines_b0_2[0][1]),Point(lines_b0_2[0][2],lines_b0_2[0][3]),Scalar(255),2,8,0);
+                lines_N.push_back(lines_b0_2[0]);
+            }
+            else if(t-s==1)//如果连续三条直线都不在条件范围内，如2 3,3 4 不在条件范围内，那么就画出第三条直线，因为 1 2 ，3 4 可能在范围内，所以要判断连续两次，3条直线不在范围内
+            {
+                line(Pline_2,Point(lines_b0_2[i][0],lines_b0_2[i][1]),Point(lines_b0_2[i][2],lines_b0_2[i][3]),Scalar(255),2,8,0);
+                lines_N.push_back(lines_b0_2[i]);
+                if(t==lines_b0_2.size()-1)//如果是最后一次比较，不在范围内，那么还需要把最后一条直线画出来
+                {
+                     line(Pline_2,Point(lines_b0_2[i+1][0],lines_b0_2[i+1][1]),Point(lines_b0_2[i+1][2],lines_b0_2[i+1][3]),Scalar(255),2,8,0);
+                     lines_N.push_back(lines_b0_2[i]);
+                }
+            }
+
+            s=t;
+
+        }
+    }
+    return lines_N;
+}
+
+vector<float> get_lines_b(vector<Vec4f> lines)
+{
+    float k=0; //直线斜率
+    vector <float> lines_arctan;//直线斜率的反正切值
+    for (unsigned int i = 0; i<lines.size(); i++)
+    {
+
+        k = (double)(lines[i][3] - lines[i][1]) / (double)(lines[i][2] - lines[i][0]); //求出直线的斜率
+        float b = (double)lines[i][1] - k * (double)lines[i][0];
+//        lines_arctan.push_back(atan(k));
+        lines_arctan.push_back(b);
+    }
+    return lines_arctan;
+}
+vector <float> get_lines_k(vector<Vec4f> lines)
+{
+    float k=0; //直线斜率
+    vector <float> lines_arctan;//直线斜率的反正切值
+    for (unsigned int i = 0; i<lines.size(); i++)
+    {
+
+        k = (double)(lines[i][3] - lines[i][1]) / (double)(lines[i][2] - lines[i][0]); //求出直线的斜率
+//        float b = (double)lines[i][1] - k * (double)lines[i][0];
+        lines_arctan.push_back(k);
+//        lines_arctan.push_back(b);
+    }
+    return lines_arctan;
+}
+vector<Vec4f> get_lines_Kselect(vector<Vec4f> lines,float k1,float k2)//斜率限制，因为在拟合直线的过程中，可能会拟合出斜率与原来的斜率相差较大的直线
+{
+    vector <Vec4f> lines_Kselect;
+    vector <float> lines_k;
+//    float k =0;
+    lines_k = get_lines_k(lines);
+    for(unsigned int i = 0;i<lines.size();i++)
+    {
+        if((lines_k[i]<k2) && (lines_k[i]>k1))
+        {
+            lines_Kselect.push_back(lines[i]);
+        }
+    }
+    return lines_Kselect;
+
+}
+
+float get_line_length(Vec4f lineP)
+{
+    Vec4f Points = lineP;
+    int x_dis = pow(Points[3]-Points[1],2);
+    int y_dis = pow(Points[2]-Points[0],2);
+    float length = sqrt(x_dis+y_dis);
+    return length;
+
+}
+float get_line_B(Vec4f lineP)
+{
+    Vec4f Points = lineP;
+    float k = (double)(Points[3] - Points[1]) / (double)(Points[2] - Points[0]); //求出直线的斜率
+    float b = (double)Points[1] - k * (double)Points[0];
+    return b;
+}
+float get_line_K(Vec4f lineP)
+{
+    Vec4f Points = lineP;
+    float k = (double)(Points[3] - Points[1]) / (double)(Points[2] - Points[0]); //求出直线的斜率
+    return k;
+}
+
+vector<Vec4f> intercept_sort1(vector<Vec4f> &lines)//截距检测，从小到大的顺序
+{
+
+//    vector<float> k_b0 = get_lines_k(lines);
+
+    for(unsigned int i=0;i<lines.size()-1;i++)
+    {
+        for(unsigned int j=0;j<lines.size()-1;j++)
+        {
+            float b1 = get_line_B(lines[j]);
+            float b2 = get_line_B(lines[j+1]);
+
+            if(b1>b2)
+            {
+                swap(lines[j],lines[j+1]);
+            }
+        }
+    }
+    return  lines;
+}
+vector<Vec4f> intercept_sort2(vector<Vec4f> &lines)//截距排序，从大到小。
+{
+    for(unsigned int i=0;i<lines.size()-1;i++)
+    {
+        for(unsigned int j=0;j<lines.size()-1;j++)
+        {
+            float b1 = get_line_B(lines[j]);
+            float b2 = get_line_B(lines[j+1]);
+
+            if(b1<b2)
+            {
+                swap(lines[j],lines[j+1]);
+            }
+        }
+    }
+    return  lines;
+}
+
+Point get_crosspoint(Vec4f line1,Vec4f line2)
+{
+    Point p;
+    float k1 = get_line_K(line1);
+    float k2 = get_line_K(line2);
+    float b1 = get_line_B(line1);
+    float b2 = get_line_B(line2);
+    p.x = (b2-b1)/(k1-k2);
+    p.y=  k1* p.x+b1;
+    return p;
+}
+
+//拟合直线方法一：此方法有漏洞，考虑情况不周全
+//   for(unsigned int i=0;i<lines_KN_s0.size();i++)
+//   {
+//       vector<Vec4f> lines_s0_P = lines_KN_s0[i];
+//       unsigned int j=0;
+//       while(j<lines_s0_P.size())
+//       {
+//           unsigned int size = lines_s0_P.size();
+//           if(size == 1)
+//           {
+//               j++;;
+//           }
+//           else
+//           {
+//               vector<Point> point_Set;//直线拟合的点集合
+
+//               Vec4f Nlines_P1 = lines_s0_P[j];
+//               Vec4f Nlines_P2 = lines_s0_P[j+1];
+
+//               float k_Nlines1 = (double)(Nlines_P1[3]- Nlines_P1[1]) / (double)(Nlines_P1[2] -Nlines_P1[0]);
+//               float k_Nlines2 = (double)(Nlines_P2[3]- Nlines_P2[1]) / (double)(Nlines_P2[2] -Nlines_P2[0]);
+//               if(fabs(k_Nlines1-k_Nlines2)<0.5)
+//               {
+//                   point_Set.push_back(Point(Nlines_P1[0],Nlines_P1[1]));
+//                   point_Set.push_back(Point(Nlines_P1[2],Nlines_P1[3]));
+//                   unsigned int m=1;
+//                   while((fabs(k_Nlines1-k_Nlines2)<0.5) && (m<size))
+//                   {
+//                       point_Set.push_back(Point(lines_s0_P[j+m][0],lines_s0_P[j+m][1]));
+//                       point_Set.push_back(Point(lines_s0_P[j+m][2],lines_s0_P[j+m][3]));
+//                       k_Nlines1 = (double)(lines_s0_P[j+m][3]- lines_s0_P[j+m][1]) / (double)(lines_s0_P[j+m][2] -lines_s0_P[j+m][0]);
+//                       k_Nlines2 = (double)(lines_s0_P[j+m+1][3]- lines_s0_P[j+m+1][1]) / (double)(lines_s0_P[j+m+1][2] -lines_s0_P[j+m+1][0]);
+//                       m++;
+//                   }
+//                   Vec4f line_para;
+//                   fitLine(point_Set,line_para,DIST_L1,0,1e-2, 1e-2);
+//                   //获取点斜式的点和斜率
+//                   cv::Point point0;
+//                   point0.x = line_para[2];
+//                   point0.y = line_para[3];
+
+//                   double k = line_para[1] / line_para[0];
+//                   //获得直线的端点（y = k(x - x0) + y0）
+//                   Point point1, point2;
+//                   point1.x = Nlines_P1[0];
+//                   //             cout<<"Nlines[0][3]:"<<Nlines[0][2]<<"  "<<endl;
+//                   point1.y = k * ( point1.x - point0.x) + point0.y;
+//                   point2.x = lines_s0_P[j+m-1][2];
+//                   //             cout<<"lines_P1[0]:"<<Nlines_P1[0]<<"  "<<endl;
+//                   point2.y = k * (point2.x - point0.x) + point0.y;
+//                   //             cout<<"Nlines_P1:"<<Nlines_P1<<"  "<<endl;
+//                   //             cout<<"Nlines_P2:"<<Nlines_P2<<"  "<<endl;
+//                   line(Pline_1, point1, point2, cv::Scalar(255), 2, 8, 0);
+//                   j=j+m;
+
+
+//               }
+
+//               else
+//               {
+//                   j=size;
+//               }
+//           }
+//       }
+//   }
+
